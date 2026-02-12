@@ -21,6 +21,7 @@ pub fn run() {
             commands::unlock_vault,
             commands::init_vault,
             commands::close_vault,
+            commands::check_vault_status,
             commands::create_shard,
             commands::get_shards,
             commands::import_asset

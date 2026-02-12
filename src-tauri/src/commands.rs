@@ -41,6 +41,21 @@ pub async fn close_vault(app_state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[command]
+pub async fn check_vault_status(path: String) -> Result<String, String> {
+    let path = Path::new(&path);
+    if !path.exists() || !path.is_dir() {
+        return Err("Invalid path".to_string());
+    }
+
+    let db_path = path.join("shards.db");
+    if db_path.exists() {
+        Ok("existing".to_string())
+    } else {
+        Ok("new".to_string())
+    }
+}
+
+#[command]
 pub async fn create_shard(
     app_state: State<'_, AppState>,
     title: String,

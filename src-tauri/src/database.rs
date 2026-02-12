@@ -49,8 +49,13 @@ impl VaultManager {
             // 3. Init DB
             let conn = Connection::open(&db_path)?;
 
-            // Set Key for SQLCipher
+            // Set Key for SQLCipher FIRST
             conn.pragma_update(None, "key", &password)?;
+
+            // Optimize for local performance
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+            conn.pragma_update(None, "synchronous", "NORMAL")?;
+            conn.pragma_update(None, "foreign_keys", "ON")?;
 
             // Create Tables
             conn.execute(
@@ -102,7 +107,13 @@ impl VaultManager {
             let asset_key = security::derive_key(password, &salt_bytes);
 
             let conn = Connection::open(&db_path)?;
+
             conn.pragma_update(None, "key", &password)?;
+
+            // Optimize for local performance
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+            conn.pragma_update(None, "synchronous", "NORMAL")?;
+            conn.pragma_update(None, "foreign_keys", "ON")?;
 
             // Verify password by attempting to read
             match conn.execute("SELECT count(*) FROM shards", []) {
