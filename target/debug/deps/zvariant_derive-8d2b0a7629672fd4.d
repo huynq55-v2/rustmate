@@ -1,0 +1,11 @@
+/home/huy/Documents/rustmate/target/debug/deps/zvariant_derive-8d2b0a7629672fd4.d: /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/lib.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/dict.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/signature.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/type.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/utils.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/value.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/../README.md
+
+/home/huy/Documents/rustmate/target/debug/deps/libzvariant_derive-8d2b0a7629672fd4.so: /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/lib.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/dict.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/signature.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/type.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/utils.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/value.rs /home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/../README.md
+
+/home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/lib.rs:
+/home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/dict.rs:
+/home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/signature.rs:
+/home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/type.rs:
+/home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/utils.rs:
+/home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/value.rs:
+/home/huy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.2/src/../README.md:
