@@ -74,6 +74,9 @@ pub async fn create_shard(
         (&id, &title, &content, &tags_json, &now),
     ).map_err(|e| e.to_string())?;
 
+    // Link assets found in content
+    link_assets_to_shard(manager, &id, &content).map_err(|e| e.to_string())?;
+
     Ok(Shard {
         id,
         title,
@@ -140,9 +143,19 @@ pub async fn import_asset(
         .to_string();
     // Simple mime type guessing based on extension
     let mime_type = match extension.to_lowercase().as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
-        "mp4" | "webm" | "mkv" => "video",
-        "mp3" | "wav" | "ogg" => "audio",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "pdf" => "application/pdf",
+        "vtt" => "text/vtt",
+        "srt" => "application/x-subrip",
         _ => "application/octet-stream",
     }
     .to_string();
@@ -154,8 +167,8 @@ pub async fn import_asset(
 
     // Read and Encrypt
     let raw_data = fs::read(source_path).map_err(|e| e.to_string())?;
-    let encrypted_data =
-        security::encrypt_data(&raw_data, &manager.asset_key).map_err(|e| e.to_string())?;
+    let encrypted_data = security::encrypt_data(&raw_data, &manager.asset_key)
+        .map_err(|e: security::SecurityError| e.to_string())?;
     fs::write(&dest_path, encrypted_data).map_err(|e| e.to_string())?;
 
     let now = chrono::Local::now().to_rfc3339();
@@ -180,4 +193,128 @@ pub async fn import_asset(
     })
 }
 
-// TODO: delete_shard, update_shard etc.
+#[command]
+pub async fn update_shard(
+    app_state: State<'_, AppState>,
+    id: String,
+    title: String,
+    content: String,
+    tags: Vec<String>,
+) -> Result<Shard, String> {
+    let mut vault_guard = app_state.vault.lock().map_err(|e| e.to_string())?;
+    let manager = vault_guard.as_mut().ok_or("Vault not locked")?;
+
+    let tags_json = serde_json::to_string(&tags).map_err(|e| e.to_string())?;
+    let now = chrono::Local::now().to_rfc3339();
+
+    manager
+        .conn
+        .execute(
+            "UPDATE shards SET title = ?1, content = ?2, tags = ?3, updated_at = ?4 WHERE id = ?5",
+            (&title, &content, &tags_json, &now, &id),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // Also fetch created_at to return complete Shard object
+    let created_at: String = manager
+        .conn
+        .query_row(
+            "SELECT created_at FROM shards WHERE id = ?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // Link assets found in content
+    link_assets_to_shard(manager, &id, &content).map_err(|e| e.to_string())?;
+
+    Ok(Shard {
+        id,
+        title,
+        content,
+        tags,
+        created_at,
+        updated_at: now,
+    })
+}
+
+fn link_assets_to_shard(
+    manager: &mut VaultManager,
+    shard_id: &str,
+    content: &str,
+) -> Result<(), rusqlite::Error> {
+    // Simple parser for asset://<uuid>
+    // UUID v4 is 36 characters long
+    let key = "asset://";
+    let mut start_idx = 0;
+
+    let mut asset_ids = std::collections::HashSet::new();
+
+    while let Some(idx) = content[start_idx..].find(key) {
+        let abs_idx = start_idx + idx + key.len();
+        if abs_idx + 36 <= content.len() {
+            let uuid_str = &content[abs_idx..abs_idx + 36];
+            // Basic validation: check if looks like uuid (optional, but safe)
+            // Just assuming it's an ID for now.
+            asset_ids.insert(uuid_str.to_string());
+        }
+        start_idx = abs_idx;
+    }
+
+    for asset_id in asset_ids {
+        // We only link if it's currently NULL? Or force ownership?
+        // Force ownership.
+        manager.conn.execute(
+            "UPDATE assets SET shard_id = ?1 WHERE id = ?2",
+            [shard_id, &asset_id],
+        )?;
+    }
+    Ok(())
+}
+
+#[command]
+pub async fn delete_shard(app_state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let mut vault_guard = app_state.vault.lock().map_err(|e| e.to_string())?;
+    let manager = vault_guard.as_mut().ok_or("Vault not locked")?;
+
+    // 1. Find all assets linked to this shard
+    let mut stmt = manager
+        .conn
+        .prepare("SELECT id, file_path FROM assets WHERE shard_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let asset_iter = stmt
+        .query_map([&id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+
+    // 2. Delete asset files from disk
+    for asset_result in asset_iter {
+        if let Ok((_asset_id, file_path)) = asset_result {
+            let full_path = manager.asset_path.join(&file_path);
+            if full_path.exists() {
+                let _ = fs::remove_file(full_path); // Ignore error if file missing
+            }
+        }
+    }
+
+    // 3. Delete assets from DB
+    manager
+        .conn
+        .execute("DELETE FROM assets WHERE shard_id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+
+    // 4. Delete shard from DB
+    manager
+        .conn
+        .execute("DELETE FROM shards WHERE id = ?1", [&id])
+        .map_err(|e: rusqlite::Error| e.to_string())?;
+
+    Ok(())
+}
+
+#[command]
+pub async fn get_server_port(app_state: State<'_, AppState>) -> Result<u16, String> {
+    let port = *app_state.server_port.lock().map_err(|e| e.to_string())?;
+    Ok(port)
+}

@@ -116,14 +116,23 @@ impl VaultManager {
             conn.pragma_update(None, "foreign_keys", "ON")?;
 
             // Verify password by attempting to read
-            match conn.execute("SELECT count(*) FROM shards", []) {
+            // Also check cipher version to ensure we are running SQLCipher
+            let version: String = conn
+                .query_row("PRAGMA cipher_version", [], |row| row.get(0))
+                .unwrap_or_default();
+            println!("SQLCipher Version: {}", version);
+
+            match conn.query_row("SELECT count(*) FROM shards", [], |_| Ok(())) {
                 Ok(_) => Ok(VaultManager {
                     db_path,
                     asset_path: assets_path,
                     asset_key,
                     conn,
                 }),
-                Err(_) => Err(VaultError::InvalidPassword),
+                Err(e) => {
+                    println!("Vault Verification Failed: {:?}", e);
+                    Err(VaultError::InvalidPassword)
+                }
             }
         }
     }
