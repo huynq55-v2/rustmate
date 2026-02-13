@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ask, message, open } from '@tauri-apps/plugin-dialog';
 
@@ -40,6 +40,11 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
 
     // Server Port
     const [serverPort, setServerPort] = useState<number | null>(null);
+
+    // Linking State
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const [showLinkModal, setShowLinkModal] = useState(false);
+    const [cursorPos, setCursorPos] = useState<{ start: number, end: number } | null>(null);
 
     useEffect(() => {
         loadShards();
@@ -182,6 +187,34 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
         }
     };
 
+    // Link Logic
+    const handleLinkClick = () => {
+        if (textareaRef.current) {
+            setCursorPos({
+                start: textareaRef.current.selectionStart,
+                end: textareaRef.current.selectionEnd
+            });
+            setShowLinkModal(true);
+        }
+    };
+
+    const handleSelectShardForLink = (targetShard: Shard) => {
+        if (!cursorPos) return;
+
+        const currentText = editContent;
+        const selectedText = currentText.substring(cursorPos.start, cursorPos.end);
+        const linkText = selectedText || targetShard.title;
+        const insertText = `[${linkText}](shard://${targetShard.id})`;
+
+        const newContent = currentText.substring(0, cursorPos.start) + insertText + currentText.substring(cursorPos.end);
+
+        setEditContent(newContent);
+        setIsDirty(true);
+        setShowLinkModal(false);
+        setCursorPos(null);
+    };
+
+    // Media Import Logic
     const handleImportMedia = async () => {
         try {
             const file = await open({
@@ -235,8 +268,24 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
         shard.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase()))
     );
 
+    // Viewer Click Handler
+    const handleViewerClick = (e: React.MouseEvent<HTMLDivElement>) => {
+        const target = e.target as HTMLElement;
+        const link = target.closest('a[data-shard-id]');
+        if (link) {
+            e.preventDefault();
+            const shardId = (link as HTMLElement).dataset.shardId;
+            if (shardId) {
+                setSelectedShardId(shardId);
+                // Also switch to viewer (already in viewer, but ensures we act correctly)
+                setViewMode('viewer');
+            }
+        }
+    };
+
     return (
         <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden', backgroundColor: '#f4f4f5' }}>
+            {/* Left Sidebar: Shard Library */}
             <div style={{ width: '250px', minWidth: '250px', borderRight: '1px solid #e4e4e7', display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff' }}>
                 <div style={{ padding: '1rem', borderBottom: '1px solid #e4e4e7' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
@@ -285,6 +334,7 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                 </div>
             </div>
 
+            {/* Center: Main Editor/Viewer */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff' }}>
                 <header style={{ height: '50px', borderBottom: '1px solid #e4e4e7', display: 'flex', alignItems: 'center', padding: '0 1rem', justifyContent: 'space-between' }}>
                     <div style={{ display: 'flex', gap: '1rem' }}>
@@ -293,7 +343,10 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                     </div>
                     <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
                         {selectedShardId && viewMode === 'editor' && (
-                            <button onClick={handleImportMedia} style={{ fontSize: '0.9rem' }}>Insert Media</button>
+                            <>
+                                <button onClick={handleLinkClick} style={{ fontSize: '0.9rem' }}>Link Shard</button>
+                                <button onClick={handleImportMedia} style={{ fontSize: '0.9rem' }}>Insert Media</button>
+                            </>
                         )}
                         {selectedShardId && (
                             <>
@@ -318,6 +371,7 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                     placeholder="Shard Title"
                                 />
                                 <textarea
+                                    ref={textareaRef}
                                     value={editContent}
                                     onChange={(e) => { setEditContent(e.target.value); setIsDirty(true); }}
                                     style={{ flex: 1, border: 'none', outline: 'none', resize: 'none', fontSize: '1rem', fontFamily: 'monospace' }}
@@ -325,28 +379,22 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                 />
                             </div>
                         ) : (
-                            <div style={{ padding: '2rem' }}>
-                                {/* Viewer Mode - Basic Markdown (raw for now, but imgs work via asset protocol) */}
+                            <div
+                                style={{ padding: '2rem' }}
+                                onClick={handleViewerClick}
+                            >
+                                {/* Viewer Mode */}
                                 <h1>{editTitle}</h1>
-                                {/* 
-                                    Rendering Strategy:
-                                    1. Global: Replace 'asset://id' -> 'http://localhost:port/asset/id'
-                                    2. Markdown Images: '![alt](url)' -> '<img ...>'
-                                    3. Markdown Links: '[text](url)' -> '<a ...>' 
-                                    4. HTML: <video>, <embed> are already HTML, so just the URL replacement above makes them work!
-                                */}
                                 <div dangerouslySetInnerHTML={{
                                     __html: editContent
                                         .replace(/\n/g, '<br/>')
                                         // 1. Global Asset URL Replacement
                                         .replace(/asset:\/\/([a-zA-Z0-9-]+)/g, (match, id) => `http://localhost:${serverPort}/asset/${id}`)
-                                        // 2. Markdown Images (now using http url)
+                                        // 2. Shard Links
+                                        .replace(/\[(.*?)\]\(shard:\/\/(.*?)\)/g, (match, text, id) => `<a href="#" data-shard-id="${id}" style="color: #2563eb; text-decoration: underline; cursor: pointer;">${text}</a>`)
+                                        // 3. Markdown Images (now using http url)
                                         .replace(/!\[(.*?)\]\((.*?)\)/g, (match, alt, src) => `<img src="${src}" alt="${alt}" style="width: 80%; display: block; margin: 20px auto; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>`)
-                                        // 3. Markdown Links (simple) - Negative lookbehind for '!' to avoid treating images as links? 
-                                        // Easier: Match images first (already done), they are now <img> tags.
-                                        // But wait, the `replace` returns a string.
-                                        // So `![foo](url)` became `<img...>`. 
-                                        // Now `[foo](url)` regex won't match `<img...>` hopefully.
+                                        // 4. Markdown Links (simple)
                                         .replace(/\[(.*?)\]\((.*?)\)/g, (match, text, href) => `<a href="${href}" target="_blank">${text}</a>`)
                                 }} />
                             </div>
@@ -356,52 +404,86 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                             Select or create a shard to start
                         </div>
                     )}
-                </div >
-            </div >
+                </div>
+            </div>
 
             {/* Right Sidebar: Inspector */}
-            {
-                true && (
-                    <div style={{ width: '300px', minWidth: '300px', borderLeft: '1px solid #e4e4e7', backgroundColor: '#fafafa', padding: '1rem' }}>
-                        <h3>Inspector</h3>
-                        {selectedShardId ? (
-                            <div>
-                                <p><strong>ID:</strong> <span style={{ fontSize: '0.8rem', fontFamily: 'monospace' }}>{selectedShardId}</span></p>
-                                <p><strong>Created:</strong> <br /> <small>{shards.find(s => s.id === selectedShardId)?.created_at}</small></p>
-                                <p><strong>Updated:</strong> <br /> <small>{shards.find(s => s.id === selectedShardId)?.updated_at}</small></p>
-                                <div style={{ marginTop: '1rem' }}>
-                                    <strong>Tags:</strong>
-                                    <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                                        <input
-                                            type="text"
-                                            value={newTag}
-                                            onChange={(e) => setNewTag(e.target.value)}
-                                            onKeyDown={(e) => e.key === 'Enter' && handleAddTag()}
-                                            placeholder="Add tag..."
-                                            style={{ flex: 1, padding: '4px', borderRadius: '4px', border: '1px solid #ccc' }}
-                                        />
-                                        <button onClick={handleAddTag} disabled={!newTag.trim()}>+</button>
-                                    </div>
-                                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
-                                        {shards.find(s => s.id === selectedShardId)?.tags.map(tag => (
-                                            <span key={tag} style={{ background: '#e4e4e7', padding: '2px 6px', borderRadius: '4px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                #{tag}
-                                                <span
-                                                    onClick={() => handleRemoveTag(tag)}
-                                                    style={{ cursor: 'pointer', fontWeight: 'bold', color: '#666' }}
-                                                >&times;</span>
-                                            </span>
-                                        ))}
-                                        {shards.find(s => s.id === selectedShardId)?.tags.length === 0 && <small style={{ color: '#999' }}>No tags</small>}
-                                    </div>
+            {true && (
+                <div style={{ width: '300px', minWidth: '300px', borderLeft: '1px solid #e4e4e7', backgroundColor: '#fafafa', padding: '1rem' }}>
+                    <h3>Inspector</h3>
+                    {selectedShardId ? (
+                        <div>
+                            <p><strong>ID:</strong> <span style={{ fontSize: '0.8rem', fontFamily: 'monospace' }}>{selectedShardId}</span></p>
+                            <p><strong>Created:</strong> <br /> <small>{shards.find(s => s.id === selectedShardId)?.created_at}</small></p>
+                            <p><strong>Updated:</strong> <br /> <small>{shards.find(s => s.id === selectedShardId)?.updated_at}</small></p>
+                            <div style={{ marginTop: '1rem' }}>
+                                <strong>Tags:</strong>
+                                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                                    <input
+                                        type="text"
+                                        value={newTag}
+                                        onChange={(e) => setNewTag(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && handleAddTag()}
+                                        placeholder="Add tag..."
+                                        style={{ flex: 1, padding: '4px', borderRadius: '4px', border: '1px solid #ccc' }}
+                                    />
+                                    <button onClick={handleAddTag} disabled={!newTag.trim()}>+</button>
+                                </div>
+                                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+                                    {shards.find(s => s.id === selectedShardId)?.tags.map(tag => (
+                                        <span key={tag} style={{ background: '#e4e4e7', padding: '2px 6px', borderRadius: '4px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                            #{tag}
+                                            <span
+                                                onClick={() => handleRemoveTag(tag)}
+                                                style={{ cursor: 'pointer', fontWeight: 'bold', color: '#666' }}
+                                            >&times;</span>
+                                        </span>
+                                    ))}
+                                    {shards.find(s => s.id === selectedShardId)?.tags.length === 0 && <small style={{ color: '#999' }}>No tags</small>}
                                 </div>
                             </div>
-                        ) : (
-                            <p style={{ color: '#a1a1aa' }}>No shard selected</p>
-                        )}
+                        </div>
+                    ) : (
+                        <p style={{ color: '#a1a1aa' }}>No shard selected</p>
+                    )}
+                </div>
+            )}
+
+            {/* Link Shard Modal */}
+            {showLinkModal && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000
+                }}>
+                    <div style={{ backgroundColor: 'white', padding: '1rem', borderRadius: '8px', width: '400px', maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: '0 4px 12px rgba(0,0,0,0.2)' }}>
+                        <h3 style={{ marginTop: 0 }}>Select Shard to Link</h3>
+                        <div style={{ marginBottom: '1rem' }}>
+                            <input
+                                autoFocus
+                                type="text"
+                                placeholder="Search shards..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                style={{ width: '100%', padding: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }}
+                            />
+                        </div>
+
+                        <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #eee', borderRadius: '4px', minHeight: '200px' }}>
+                            {filteredShards.map(shard => (
+                                <div
+                                    key={shard.id}
+                                    onClick={() => handleSelectShardForLink(shard)}
+                                    style={{ padding: '0.5rem', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
+                                >
+                                    <div style={{ fontWeight: 'bold' }}>{shard.title}</div>
+                                    <div style={{ fontSize: '0.8rem', color: '#666' }}>{shard.id.substring(0, 8)}...</div>
+                                </div>
+                            ))}
+                        </div>
+                        <button onClick={() => setShowLinkModal(false)} style={{ marginTop: '1rem', padding: '0.5rem' }}>Cancel</button>
                     </div>
-                )
-            }
-        </div >
+                </div>
+            )}
+        </div>
     );
 }

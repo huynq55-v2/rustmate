@@ -37,4 +37,3 @@ tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors", "fs"] }
-
