@@ -1,6 +1,22 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ask, message, open } from '@tauri-apps/plugin-dialog';
+import hljs from 'highlight.js';
+import 'highlight.js/styles/atom-one-dark.css';
+import { marked, Renderer } from 'marked';
+import { markedHighlight } from 'marked-highlight';
+
+// Configure marked with syntax highlighting
+marked.use(
+    markedHighlight({
+        highlight(code, lang) {
+            if (lang && hljs.getLanguage(lang)) {
+                return hljs.highlight(code, { language: lang }).value;
+            }
+            return hljs.highlightAuto(code).value;
+        }
+    })
+);
 
 interface Shard {
     id: string;
@@ -219,20 +235,20 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
     // Code Block Logic
     const handleInsertCode = () => {
         if (!textareaRef.current) return;
+        const lang = window.prompt('Ngôn ngữ? (python, rust, js, ts, html, css, sql...)', 'python') || '';
         const ta = textareaRef.current;
         const start = ta.selectionStart;
         const end = ta.selectionEnd;
         const selected = editContent.substring(start, end);
-        const codeBlock = `\n\`\`\`\n${selected || 'code here'}\n\`\`\`\n`;
+        const codeBlock = `\n\`\`\`${lang}\n${selected || '// code here'}\n\`\`\`\n`;
         const newContent = editContent.substring(0, start) + codeBlock + editContent.substring(end);
         setEditContent(newContent);
         setIsDirty(true);
-        // Re-focus and place cursor inside code block
         setTimeout(() => {
             ta.focus();
-            const cursorAt = start + 5; // after ```\n
+            const cursorAt = start + 5 + lang.length; // after ```lang\n
             ta.selectionStart = cursorAt;
-            ta.selectionEnd = cursorAt + (selected || 'code here').length;
+            ta.selectionEnd = cursorAt + (selected || '// code here').length;
         }, 0);
     };
 
@@ -425,22 +441,25 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                 {/* Viewer Mode */}
                                 <h1>{editTitle}</h1>
                                 <div dangerouslySetInnerHTML={{
-                                    __html: editContent
-                                        // 0. Fenced code blocks (```lang ... ```) — must run BEFORE <br/> replacement
-                                        .replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
-                                            const escaped = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                                            const langLabel = lang ? `<div style="font-size:0.7rem;color:#888;margin-bottom:4px;">${lang}</div>` : '';
-                                            return `<pre style="background:#1e1e2e;color:#cdd6f4;padding:1rem;border-radius:8px;overflow-x:auto;font-size:0.9rem;margin:12px 0;">${langLabel}<code>${escaped}</code></pre>`;
-                                        })
-                                        .replace(/\n/g, '<br/>')
-                                        // 1. Global Asset URL Replacement
-                                        .replace(/asset:\/\/([a-zA-Z0-9-]+)/g, (_match, id) => `http://localhost:${serverPort}/asset/${id}`)
-                                        // 2. Shard Links
-                                        .replace(/\[(.*?)\]\(shard:\/\/(.*?)\)/g, (_match, text, id) => `<a href="#" data-shard-id="${id}" style="color: #2563eb; text-decoration: underline; cursor: pointer;">${text}</a>`)
-                                        // 3. Markdown Images (now using http url)
-                                        .replace(/!\[(.*?)\]\((.*?)\)/g, (_match, alt, src) => `<img src="${src}" alt="${alt}" style="width: 80%; display: block; margin: 20px auto; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>`)
-                                        // 4. Markdown Links (simple)
-                                        .replace(/\[(.*?)\]\((.*?)\)/g, (_match, text, href) => `<a href="${href}" target="_blank">${text}</a>`)
+                                    __html: (() => {
+                                        // Pre-process: replace asset:// URLs with http localhost
+                                        let content = editContent.replace(
+                                            /asset:\/\/([a-zA-Z0-9-]+)/g,
+                                            (_m, id) => `http://localhost:${serverPort}/asset/${id}`
+                                        );
+
+                                        // Custom renderer for shard:// links
+                                        const renderer = new Renderer();
+                                        renderer.link = ({ href, text }) => {
+                                            if (href && href.startsWith('shard://')) {
+                                                const id = href.replace('shard://', '');
+                                                return `<a href="#" data-shard-id="${id}" style="color:#2563eb;text-decoration:underline;cursor:pointer;">${text}</a>`;
+                                            }
+                                            return `<a href="${href}" target="_blank" rel="noopener">${text}</a>`;
+                                        };
+
+                                        return marked.parse(content, { renderer, breaks: true }) as string;
+                                    })()
                                 }} />
                             </div>
                         )

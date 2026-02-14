@@ -114,3 +114,18 @@ button {
     background-color: #0f0f0f69;
   }
 }
+
+/* Fix: Prevent text from appearing bold when selected */
+::selection {
+  background-color: #b4d5fe;
+  color: inherit;
+  font-weight: inherit;
+  -webkit-text-stroke-width: 0;
+}
+
+/* Fix: Consistent font rendering to prevent weight shifts */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: geometricPrecision;
+}
