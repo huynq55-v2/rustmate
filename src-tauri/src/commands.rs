@@ -273,6 +273,40 @@ fn link_assets_to_shard(
 }
 
 #[command]
+pub async fn delete_asset(app_state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let mut vault_guard = app_state.vault.lock().map_err(|e| e.to_string())?;
+    let manager = vault_guard.as_mut().ok_or("Vault not locked")?;
+
+    // 1. Get file path
+    let file_path: String = manager
+        .conn
+        .query_row("SELECT file_path FROM assets WHERE id = ?1", [&id], |row| {
+            row.get(0)
+        })
+        .map_err(|_| "Asset not found".to_string())?;
+
+    // 2. Delete from disk
+    let full_path = manager.asset_path.join(&file_path);
+    if full_path.exists() {
+        let _ = fs::remove_file(full_path);
+    }
+
+    // 3. Delete from DB
+    manager
+        .conn
+        .execute("DELETE FROM assets WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+
+    // 4. Invalidate cache
+    drop(vault_guard);
+    if let Ok(mut cache) = app_state.asset_cache.lock() {
+        cache.remove(&id);
+    }
+
+    Ok(())
+}
+
+#[command]
 pub async fn delete_shard(app_state: State<'_, AppState>, id: String) -> Result<(), String> {
     let mut vault_guard = app_state.vault.lock().map_err(|e| e.to_string())?;
     let manager = vault_guard.as_mut().ok_or("Vault not locked")?;

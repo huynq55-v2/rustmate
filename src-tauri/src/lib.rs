@@ -55,6 +55,7 @@ pub fn run() {
             commands::delete_shard,
             commands::get_shards,
             commands::import_asset,
+            commands::delete_asset,
             commands::get_server_port
         ])
         .run(tauri::generate_context!())

@@ -107,11 +107,29 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                 tags: shard.tags
             });
 
+            // Detect and delete removed assets
+            const oldAssets = extractAssetIds(shard.content);
+            const newAssets = extractAssetIds(editContent);
+            const removedAssets = [...oldAssets].filter(x => !newAssets.has(x));
+
+            if (removedAssets.length > 0) {
+                console.log("Assets to delete:", removedAssets);
+                for (const assetId of removedAssets) {
+                    await invoke('delete_asset', { id: assetId });
+                }
+            }
+
             setShards(shards.map(s => s.id === selectedShardId ? updatedShard : s));
             setIsDirty(false);
         } catch (e) {
             console.error("Failed to save:", e);
+            await message("Failed to save: " + String(e), { kind: 'error' });
         }
+    };
+
+    const extractAssetIds = (content: string): Set<string> => {
+        const matches = content.matchAll(/asset:\/\/([a-zA-Z0-9-]+)/g);
+        return new Set(Array.from(matches, m => m[1]));
     };
 
     const handleDelete = async () => {
@@ -196,6 +214,26 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
             });
             setShowLinkModal(true);
         }
+    };
+
+    // Code Block Logic
+    const handleInsertCode = () => {
+        if (!textareaRef.current) return;
+        const ta = textareaRef.current;
+        const start = ta.selectionStart;
+        const end = ta.selectionEnd;
+        const selected = editContent.substring(start, end);
+        const codeBlock = `\n\`\`\`\n${selected || 'code here'}\n\`\`\`\n`;
+        const newContent = editContent.substring(0, start) + codeBlock + editContent.substring(end);
+        setEditContent(newContent);
+        setIsDirty(true);
+        // Re-focus and place cursor inside code block
+        setTimeout(() => {
+            ta.focus();
+            const cursorAt = start + 5; // after ```\n
+            ta.selectionStart = cursorAt;
+            ta.selectionEnd = cursorAt + (selected || 'code here').length;
+        }, 0);
     };
 
     const handleSelectShardForLink = (targetShard: Shard) => {
@@ -344,6 +382,7 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                     <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
                         {selectedShardId && viewMode === 'editor' && (
                             <>
+                                <button onClick={handleInsertCode} style={{ fontSize: '0.9rem' }}>Code</button>
                                 <button onClick={handleLinkClick} style={{ fontSize: '0.9rem' }}>Link Shard</button>
                                 <button onClick={handleImportMedia} style={{ fontSize: '0.9rem' }}>Insert Media</button>
                             </>
@@ -387,15 +426,21 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                 <h1>{editTitle}</h1>
                                 <div dangerouslySetInnerHTML={{
                                     __html: editContent
+                                        // 0. Fenced code blocks (```lang ... ```) — must run BEFORE <br/> replacement
+                                        .replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+                                            const escaped = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                                            const langLabel = lang ? `<div style="font-size:0.7rem;color:#888;margin-bottom:4px;">${lang}</div>` : '';
+                                            return `<pre style="background:#1e1e2e;color:#cdd6f4;padding:1rem;border-radius:8px;overflow-x:auto;font-size:0.9rem;margin:12px 0;">${langLabel}<code>${escaped}</code></pre>`;
+                                        })
                                         .replace(/\n/g, '<br/>')
                                         // 1. Global Asset URL Replacement
-                                        .replace(/asset:\/\/([a-zA-Z0-9-]+)/g, (match, id) => `http://localhost:${serverPort}/asset/${id}`)
+                                        .replace(/asset:\/\/([a-zA-Z0-9-]+)/g, (_match, id) => `http://localhost:${serverPort}/asset/${id}`)
                                         // 2. Shard Links
-                                        .replace(/\[(.*?)\]\(shard:\/\/(.*?)\)/g, (match, text, id) => `<a href="#" data-shard-id="${id}" style="color: #2563eb; text-decoration: underline; cursor: pointer;">${text}</a>`)
+                                        .replace(/\[(.*?)\]\(shard:\/\/(.*?)\)/g, (_match, text, id) => `<a href="#" data-shard-id="${id}" style="color: #2563eb; text-decoration: underline; cursor: pointer;">${text}</a>`)
                                         // 3. Markdown Images (now using http url)
-                                        .replace(/!\[(.*?)\]\((.*?)\)/g, (match, alt, src) => `<img src="${src}" alt="${alt}" style="width: 80%; display: block; margin: 20px auto; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>`)
+                                        .replace(/!\[(.*?)\]\((.*?)\)/g, (_match, alt, src) => `<img src="${src}" alt="${alt}" style="width: 80%; display: block; margin: 20px auto; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"/>`)
                                         // 4. Markdown Links (simple)
-                                        .replace(/\[(.*?)\]\((.*?)\)/g, (match, text, href) => `<a href="${href}" target="_blank">${text}</a>`)
+                                        .replace(/\[(.*?)\]\((.*?)\)/g, (_match, text, href) => `<a href="${href}" target="_blank">${text}</a>`)
                                 }} />
                             </div>
                         )
