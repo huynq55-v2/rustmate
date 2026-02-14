@@ -4,19 +4,6 @@ import { ask, message, open } from '@tauri-apps/plugin-dialog';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/atom-one-dark.css';
 import { marked, Renderer } from 'marked';
-import { markedHighlight } from 'marked-highlight';
-
-// Configure marked with syntax highlighting
-marked.use(
-    markedHighlight({
-        highlight(code, lang) {
-            if (lang && hljs.getLanguage(lang)) {
-                return hljs.highlight(code, { language: lang }).value;
-            }
-            return hljs.highlightAuto(code).value;
-        }
-    })
-);
 
 interface Shard {
     id: string;
@@ -61,6 +48,19 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const [showLinkModal, setShowLinkModal] = useState(false);
     const [cursorPos, setCursorPos] = useState<{ start: number, end: number } | null>(null);
+
+    // Handle messages from Iframe Viewer (e.g. shard links)
+    useEffect(() => {
+        const handleMessage = (event: MessageEvent) => {
+            if (event.data?.type === 'open_shard') {
+                const shardId = event.data.id;
+                setSelectedShardId(shardId);
+                setViewMode('viewer');
+            }
+        };
+        window.addEventListener('message', handleMessage);
+        return () => window.removeEventListener('message', handleMessage);
+    }, []);
 
     useEffect(() => {
         loadShards();
@@ -322,20 +322,7 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
         shard.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase()))
     );
 
-    // Viewer Click Handler
-    const handleViewerClick = (e: React.MouseEvent<HTMLDivElement>) => {
-        const target = e.target as HTMLElement;
-        const link = target.closest('a[data-shard-id]');
-        if (link) {
-            e.preventDefault();
-            const shardId = (link as HTMLElement).dataset.shardId;
-            if (shardId) {
-                setSelectedShardId(shardId);
-                // Also switch to viewer (already in viewer, but ensures we act correctly)
-                setViewMode('viewer');
-            }
-        }
-    };
+
 
     return (
         <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden', backgroundColor: '#f4f4f5' }}>
@@ -403,6 +390,7 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                 <button onClick={handleImportMedia} style={{ fontSize: '0.9rem' }}>Insert Media</button>
                             </>
                         )}
+
                         {selectedShardId && (
                             <>
                                 <button onClick={handleDelete} style={{ color: 'red' }}>Delete</button>
@@ -434,34 +422,110 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                 />
                             </div>
                         ) : (
-                            <div
-                                style={{ padding: '2rem' }}
-                                onClick={handleViewerClick}
-                            >
-                                {/* Viewer Mode */}
-                                <h1>{editTitle}</h1>
-                                <div dangerouslySetInnerHTML={{
-                                    __html: (() => {
-                                        // Pre-process: replace asset:// URLs with http localhost
-                                        let content = editContent.replace(
-                                            /asset:\/\/([a-zA-Z0-9-]+)/g,
-                                            (_m, id) => `http://localhost:${serverPort}/asset/${id}`
-                                        );
+                            <iframe
+                                title="viewer"
+                                style={{ flex: 1, border: 'none', width: '100%', height: '100%', backgroundColor: 'transparent' }}
+                                srcDoc={(() => {
+                                    // 1. Process Markdown Content
+                                    // 1a. Replace asset:// URLs
+                                    let content = editContent.replace(
+                                        /asset:\/\/([a-zA-Z0-9-]+)/g,
+                                        (_m, id) => `http://localhost:${serverPort}/asset/${id}`
+                                    );
 
-                                        // Custom renderer for shard:// links
-                                        const renderer = new Renderer();
-                                        renderer.link = ({ href, text }) => {
-                                            if (href && href.startsWith('shard://')) {
-                                                const id = href.replace('shard://', '');
-                                                return `<a href="#" data-shard-id="${id}" style="color:#2563eb;text-decoration:underline;cursor:pointer;">${text}</a>`;
-                                            }
-                                            return `<a href="${href}" target="_blank" rel="noopener">${text}</a>`;
-                                        };
+                                    // 1b. Extract code blocks
+                                    const codeBlocks: string[] = [];
+                                    content = content.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+                                        let highlighted: string;
+                                        if (lang && hljs.getLanguage(lang)) {
+                                            highlighted = hljs.highlight(code, { language: lang }).value;
+                                        } else {
+                                            highlighted = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                                        }
+                                        const langBadge = lang
+                                            ? `<div style="font-size:0.7rem;color:#7f849c;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">${lang}</div>`
+                                            : '';
+                                        const block = `<pre class="hljs" style="padding:1rem;border-radius:8px;overflow-x:auto;margin:12px 0;"><code>${langBadge}${highlighted}</code></pre>`;
+                                        codeBlocks.push(block);
+                                        return `\n\nCODEBLOCK${codeBlocks.length - 1}PLACEHOLDER\n\n`;
+                                    });
 
-                                        return marked.parse(content, { renderer, breaks: true }) as string;
-                                    })()
-                                }} />
-                            </div>
+                                    // 1c. Protect HTML
+                                    const htmlBlocks: string[] = [];
+                                    content = content.replace(/<(video|embed|track|\/video)[^>]*\/?>/gi, (match) => {
+                                        htmlBlocks.push(match);
+                                        return `HTMLSAFE${htmlBlocks.length - 1}END`;
+                                    });
+
+                                    // 1d. Custom Renderer
+                                    const renderer = new Renderer();
+                                    renderer.link = ({ href, text }) => {
+                                        if (href && href.startsWith('shard://')) {
+                                            const id = href.replace('shard://', '');
+                                            return `<a href="#" data-shard-id="${id}" style="color:#2563eb;text-decoration:underline;cursor:pointer;">${text}</a>`;
+                                        }
+                                        return `<a href="${href}" target="_blank" rel="noopener">${text}</a>`;
+                                    };
+
+                                    // 1e. Parse
+                                    let html = marked.parse(content, { renderer, breaks: true }) as string;
+
+                                    // 1f. Restore
+                                    html = html.replace(/<p>\s*CODEBLOCK(\d+)PLACEHOLDER\s*<\/p>/g, (_, idx) => codeBlocks[parseInt(idx)]);
+                                    html = html.replace(/CODEBLOCK(\d+)PLACEHOLDER/g, (_, idx) => codeBlocks[parseInt(idx)]);
+                                    html = html.replace(/HTMLSAFE(\d+)END/g, (_, idx) => htmlBlocks[parseInt(idx)]);
+
+                                    // 2. Wrap in HTML Template
+                                    return `
+                                        <!DOCTYPE html>
+                                        <html>
+                                        <head>
+                                            <style>
+                                                body {
+                                                    font-family: system-ui, -apple-system, blinkmacsystemfont, "Segoe UI", roboto, oxygen, ubuntu, cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+                                                    margin: 0;
+                                                    padding: 2rem;
+                                                    color: #0f0f0f;
+                                                    background-color: transparent;
+                                                    font-weight: 400;
+                                                    -webkit-font-smoothing: antialiased;
+                                                }
+                                                h1, h2, h3, h4, h5, h6 { margin-top: 1.5em; margin-bottom: 0.5em; font-weight: 600; }
+                                                h1 { font-size: 2em; border-bottom: 1px solid #eaeaea; padding-bottom: 0.3em; }
+                                                p { line-height: 1.6; margin-bottom: 1em; }
+                                                a { color: #2563eb; text-decoration: none; cursor: pointer; }
+                                                a:hover { text-decoration: underline; }
+                                                img { max-width: 100%; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                                                pre { font-family: "JetBrains Mono", monospace; font-size: 0.9em; }
+                                                code { font-family: "JetBrains Mono", monospace; background: rgba(0,0,0,0.05); padding: 0.2em 0.4em; border-radius: 4px; }
+                                                pre code { background: transparent; padding: 0; }
+                                                blockquote { border-left: 4px solid #e5e7eb; margin: 0; padding-left: 1rem; color: #6b7280; }
+                                                ul, ol { padding-left: 1.5rem; }
+                                                li { margin-bottom: 0.5em; }
+                                                ::selection { background-color: #b4d5fe; color: inherit; }
+                                            </style>
+                                            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+                                        </head>
+                                        <body>
+                                            <h1>${editTitle}</h1>
+                                            ${html}
+                                            <script>
+                                                // Link click handling
+                                                document.addEventListener('click', e => {
+                                                    const link = e.target.closest('a[data-shard-id]');
+                                                    if (link) {
+                                                        e.preventDefault();
+                                                        window.parent.postMessage({ type: 'open_shard', id: link.dataset.shardId }, '*');
+                                                    }
+                                                });
+                                                
+                                                // Forward scroll events? Maybe not needed for simple viewer.
+                                            </script>
+                                        </body>
+                                        </html>
+                                    `;
+                                })()}
+                            />
                         )
                     ) : (
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#a1a1aa' }}>

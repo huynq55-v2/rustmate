@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
+
 .logo.vite:hover {
   filter: drop-shadow(0 0 2em #747bff);
 }
@@ -5,8 +7,9 @@
 .logo.react:hover {
   filter: drop-shadow(0 0 2em #61dafb);
 }
+
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-family: 'Roboto', Helvetica, Arial, sans-serif;
   font-size: 16px;
   line-height: 24px;
   font-weight: 400;
@@ -14,8 +17,8 @@
   color: #0f0f0f;
   background-color: #f6f6f6;
 
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+  font-synthesis: auto;
+  text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
@@ -47,7 +50,7 @@
 }
 
 a {
-  font-weight: 500;
+  font-weight: inherit;
   color: #646cff;
   text-decoration: inherit;
 }
@@ -81,6 +84,7 @@ button {
 button:hover {
   border-color: #396cd8;
 }
+
 button:active {
   border-color: #396cd8;
   background-color: #e8e8e8;
@@ -110,22 +114,66 @@ button {
     color: #ffffff;
     background-color: #0f0f0f98;
   }
+
   button:active {
     background-color: #0f0f0f69;
   }
 }
 
-/* Fix: Prevent text from appearing bold when selected */
-::selection {
-  background-color: #b4d5fe;
-  color: inherit;
-  font-weight: inherit;
-  -webkit-text-stroke-width: 0;
+/* Disable text selection in viewer to prevent WebKitGTK bold-on-select bug.
+   A Copy button is provided instead. */
+.viewer-container {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-/* Fix: Consistent font rendering to prevent weight shifts */
+/* Standard text rendering */
+body {
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
 * {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: geometricPrecision;
+}
+
+/* Code block styling */
+pre,
+code {
+  font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  font-size: 1.2rem !important;
+  line-height: 1.5;
+}
+
+pre {
+  margin: 1em 0;
+  border-radius: 6px;
+}
+
+/* Override highlight.js bold/italic that leak into code blocks */
+.hljs-strong {
+  font-weight: normal !important;
+}
+
+.hljs-emphasis {
+  font-style: normal !important;
+}
+
+/* NUCLEAR FIX: Force font-weight 400 on ALL viewer content.
+   This prevents marked's <strong>, <em>, <h2>-<h6> from causing
+   unexpected weight changes. Headings use font-size for hierarchy instead. */
+[style*="padding: 2rem"] p,
+[style*="padding: 2rem"] span,
+[style*="padding: 2rem"] strong,
+[style*="padding: 2rem"] em,
+[style*="padding: 2rem"] b,
+[style*="padding: 2rem"] i,
+[style*="padding: 2rem"] li,
+[style*="padding: 2rem"] blockquote,
+[style*="padding: 2rem"] td,
+[style*="padding: 2rem"] th {
+  font-weight: 400 !important;
+  font-style: normal !important;
 }
