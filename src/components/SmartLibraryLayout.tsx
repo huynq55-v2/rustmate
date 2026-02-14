@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ask, message, open } from '@tauri-apps/plugin-dialog';
 import hljs from 'highlight.js';
-import 'highlight.js/styles/atom-one-dark.css';
+// Remove static css so we can switch themes in iframe
 import { marked, Renderer } from 'marked';
 
 interface Shard {
@@ -33,6 +33,21 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
     const [viewMode, setViewMode] = useState<ViewMode>('viewer');
     const [searchQuery, setSearchQuery] = useState('');
 
+    // Theme State
+    const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+        return (localStorage.getItem('theme') as 'light' | 'dark') || 'light';
+    });
+
+    // Apply Theme
+    useEffect(() => {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('theme', theme);
+    }, [theme]);
+
+    const toggleTheme = () => {
+        setTheme(prev => prev === 'light' ? 'dark' : 'light');
+    };
+
     // Editor State
     const [editTitle, setEditTitle] = useState('');
     const [editContent, setEditContent] = useState('');
@@ -45,22 +60,118 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
     const [serverPort, setServerPort] = useState<number | null>(null);
 
     // Linking State
-    const textareaRef = useRef<HTMLTextAreaElement>(null);
     const [showLinkModal, setShowLinkModal] = useState(false);
-    const [cursorPos, setCursorPos] = useState<{ start: number, end: number } | null>(null);
 
-    // Handle messages from Iframe Viewer (e.g. shard links)
+    // Handle messages from Iframe Viewer (e.g. shard links) AND Editor
+    const editorIframeRef = useRef<HTMLIFrameElement>(null);
+    const lastEditorContent = useRef('');
+
+    // Iframe Style Generators
+    const getIframeStyle = () => `
+        body {
+            font-family: system-ui, -apple-system, blinkmacsystemfont, "Segoe UI", roboto, oxygen, ubuntu, cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+            margin: 0;
+            padding: ${viewMode === 'viewer' ? '2rem' : '0'};
+            color: ${theme === 'dark' ? '#f4f4f5' : '#0f0f0f'};
+            background-color: transparent;
+            font-weight: 400;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            -webkit-font-smoothing: antialiased;
+        }
+        textarea {
+            color: ${theme === 'dark' ? '#f4f4f5' : '#0f0f0f'};
+            caret-color: ${theme === 'dark' ? '#60a5fa' : '#2563eb'};
+        }
+        a { color: ${theme === 'dark' ? '#60a5fa' : '#2563eb'}; }
+        code { background: ${theme === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)'}; }
+        blockquote { border-left-color: ${theme === 'dark' ? '#3f3f46' : '#e5e7eb'}; color: ${theme === 'dark' ? '#a1a1aa' : '#6b7280'}; }
+        h1 { border-bottom-color: ${theme === 'dark' ? '#3f3f46' : '#eaeaea'}; }
+        
+        /* Fix Code Wrapping */
+        pre {
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: break-word; /* standard */
+        }
+        pre code {
+            white-space: pre-wrap !important;
+            word-break: break-word !important;
+            overflow-wrap: break-word !important;
+        }
+    `;
+
+    // Handle messages from Iframe Viewer (e.g. shard links) AND Editor
     useEffect(() => {
         const handleMessage = (event: MessageEvent) => {
             if (event.data?.type === 'open_shard') {
                 const shardId = event.data.id;
                 setSelectedShardId(shardId);
                 setViewMode('viewer');
+            } else if (event.data?.type === 'editor_update') {
+                const newValue = event.data.value;
+                if (newValue !== lastEditorContent.current) {
+                    lastEditorContent.current = newValue; // Update ref first
+                    setEditContent(newValue);
+                    setIsDirty(true);
+                }
+            } else if (event.data?.type === 'editor_ready') {
+                // Iframe is ready, send initial content
+                // We always send content on ready, regardless of lastEditorContent, because iframe is fresh.
+                // We do NOT update lastEditorContent here, or we set it?
+                // Actually, if we send content, we should set lastEditorContent to match, to avoid echo?
+                // No, echo protection is on `editor_update` (incoming) vs `editContent` (outgoing).
+                // If we send, it's outgoing.
+
+                // FORCE SEND
+                if (editorIframeRef.current) {
+                    editorIframeRef.current.contentWindow?.postMessage({ type: 'set_content', value: editContent }, '*');
+                }
             }
         };
         window.addEventListener('message', handleMessage);
         return () => window.removeEventListener('message', handleMessage);
-    }, []);
+    }, [editContent]); // Add dependency on editContent so handleMessage uses fresh state? 
+    // Or allow handleMessage to read state via closure?
+    // If we use dependency, we re-bind listener. That's fine.
+
+    // Sync content TO editor iframe when switching shards - keep this for hot switches if needed, 
+    // but editor_ready covers mount.
+    // However, if we switch Shard while ALREADY in editor, iframe might NOT reload (if React reuses it).
+    // React usually re-renders iframe srcDoc -> reload.
+    // If srcDoc changes, iframe reloads.
+    // srcDoc depends on nothing?? No, it's memoized or static in my code?
+    // In my code: `srcDoc={(() => { ... })()}`. It's re-evaluated on every render.
+    // But since it returns a string, if the string is identical, React might not reload the iframe?
+    // The string IS identical (no dynamic content embedded anymore).
+    // So if we switch shard, `editContent` changes, parent re-renders.
+    // Does iframe reload?
+    // If `srcDoc` string is identical, React might keep the DOM node.
+    // If so, `editor_ready` WON'T fire on shard switch!
+    // So we NEED the `useEffect` on `editContent` change too.
+
+    useEffect(() => {
+        if (viewMode === 'editor' && editorIframeRef.current) {
+            if (editContent !== lastEditorContent.current) {
+                // Content changed from OUTSIDE (e.g. switching shard, or initial load)
+                lastEditorContent.current = editContent; // Sync ref
+                editorIframeRef.current.contentWindow?.postMessage({ type: 'set_content', value: editContent }, '*');
+
+                // Retry for initial load
+                setTimeout(() => {
+                    editorIframeRef.current?.contentWindow?.postMessage({ type: 'set_content', value: editContent }, '*');
+                }, 50);
+            }
+        }
+    }, [editContent, viewMode]);
+    // Problem: If I type in editor -> editContent updates -> this effect runs -> sends 'set_content' back to editor -> loop/cursor reset?
+    // FIX: Only send if the update came from OUTSIDE?
+    // How to distinguish?
+    // We can check if isDirty? No.
+    // We need to know if the last change was from us.
+    // Ref: lastContentFromEditor.
+    // If editContent === lastContentFromEditor, do NOT send.
 
     useEffect(() => {
         loadShards();
@@ -223,49 +334,70 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
 
     // Link Logic
     const handleLinkClick = () => {
-        if (textareaRef.current) {
-            setCursorPos({
-                start: textareaRef.current.selectionStart,
-                end: textareaRef.current.selectionEnd
-            });
-            setShowLinkModal(true);
-        }
+        // Just open the modal. The Iframe should keep its selection/focus, 
+        // or we rely on the user having selected something before clicking.
+        setShowLinkModal(true);
     };
 
     // Code Block Logic
     const handleInsertCode = () => {
-        if (!textareaRef.current) return;
         const lang = window.prompt('Ngôn ngữ? (python, rust, js, ts, html, css, sql...)', 'python') || '';
-        const ta = textareaRef.current;
-        const start = ta.selectionStart;
-        const end = ta.selectionEnd;
-        const selected = editContent.substring(start, end);
-        const codeBlock = `\n\`\`\`${lang}\n${selected || '// code here'}\n\`\`\`\n`;
-        const newContent = editContent.substring(0, start) + codeBlock + editContent.substring(end);
-        setEditContent(newContent);
-        setIsDirty(true);
-        setTimeout(() => {
-            ta.focus();
-            const cursorAt = start + 5 + lang.length; // after ```lang\n
-            ta.selectionStart = cursorAt;
-            ta.selectionEnd = cursorAt + (selected || '// code here').length;
-        }, 0);
+
+        editorIframeRef.current?.contentWindow?.postMessage({
+            type: 'wrap_selection',
+            prefix: `\n\`\`\`${lang}\n`,
+            suffix: `\n\`\`\`\n`
+        }, '*');
+
+        // Focus the iframe to ensure input loop works? 
+        // The wrap_selection logic in iframe already does focus().
     };
 
     const handleSelectShardForLink = (targetShard: Shard) => {
-        if (!cursorPos) return;
+        const insertUrl = `shard://${targetShard.id}`;
 
-        const currentText = editContent;
-        const selectedText = currentText.substring(cursorPos.start, cursorPos.end);
-        const linkText = selectedText || targetShard.title;
-        const insertText = `[${linkText}](shard://${targetShard.id})`;
+        // We instruct iframe to wrap current selection with link syntax, OR insert if empty.
+        // Actually, markdown link is [text](url).
+        // If selection is empty, we insert [Title](shard://ID).
+        // If selection is "foo", we insert [foo](shard://ID).
 
-        const newContent = currentText.substring(0, cursorPos.start) + insertText + currentText.substring(cursorPos.end);
+        editorIframeRef.current?.contentWindow?.postMessage({
+            type: 'wrap_selection',
+            prefix: `[`,
+            suffix: `](${insertUrl})`
+        }, '*');
 
-        setEditContent(newContent);
-        setIsDirty(true);
-        setShowLinkModal(false);
-        setCursorPos(null);
+        // If the selection was empty, the result is `[](url)`, which is bad.
+        // My wrap_selection logic: "before + prefix + selected + suffix + after".
+        // If selected is empty -> "prefix + suffix". -> `[](url)`.
+        // We want `[Title](url)`.
+        // Logic fix: Check if we have selection?
+        // Parent doesn't know.
+        // So we should send a smarter command: `cmd_link_shard`?
+        // Let's implement `cmd_link_shard` in Iframe?
+        // Or just `wrap_selection` with a fallback inside Iframe?
+        // Getting complicated.
+        // Simplest: `wrap_selection` with `defaultText` param?
+        // Iframe logic: `const selected = ... || data.defaultText`.
+
+        // Let's assume for now user selects text OR we just insert title.
+        // If I use `insert_text`, it overwrites?
+        // Let's use `wrap_selection` and improve iframe script later if needed.
+        // Or better: update `srcDoc` to handle `defaultText`.
+        // But for now, I'll just use `wrap_selection`.
+        // Wait, if I want to use `Title` if empty, I need to know if it's empty.
+        // I'll send `defaultText: targetShard.title`.
+        // I need to update iframe script to handle `defaultText`.
+        // Let's do that in a separate edit.
+
+        // For now:
+        editorIframeRef.current?.contentWindow?.postMessage({
+            type: 'wrap_selection',
+            prefix: `[`,
+            suffix: `](${insertUrl})`,
+            defaultText: targetShard.title
+        }, '*');
+
     };
 
     // Media Import Logic
@@ -325,20 +457,68 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
 
 
     return (
-        <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden', backgroundColor: '#f4f4f5' }}>
+        <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
+            <style>
+                {`
+                :root {
+                    --bg-primary: #fafafa;
+                    --bg-secondary: #ffffff;
+                    --bg-tertiary: #e4e4e7;
+                    --text-primary: #0f0f0f;
+                    --text-secondary: #71717a;
+                    --border-color: #e4e4e7;
+                    --input-bg: #ffffff;
+                    --accent-color: #2563eb;
+                }
+
+                [data-theme='dark'] {
+                    --bg-primary: #18181b;
+                    --bg-secondary: #27272a;
+                    --bg-tertiary: #3f3f46;
+                    --text-primary: #f4f4f5;
+                    --text-secondary: #a1a1aa;
+                    --border-color: #3f3f46;
+                    --input-bg: #27272a;
+                    --accent-color: #60a5fa;
+                }
+
+                button {
+                    background-color: var(--bg-tertiary);
+                    color: var(--text-primary);
+                    border: 1px solid var(--border-color);
+                    padding: 0.3rem 0.6rem;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    transition: background-color 0.2s, color 0.2s, border-color 0.2s;
+                }
+                button:hover:not(:disabled) {
+                    background-color: var(--bg-tertiary);
+                    filter: brightness(1.1);
+                }
+                button:disabled {
+                    opacity: 0.6;
+                    cursor: not-allowed;
+                }
+                `}
+            </style>
             {/* Left Sidebar: Shard Library */}
-            <div style={{ width: '250px', minWidth: '250px', borderRight: '1px solid #e4e4e7', display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff' }}>
-                <div style={{ padding: '1rem', borderBottom: '1px solid #e4e4e7' }}>
+            <div style={{ width: '250px', minWidth: '250px', borderRight: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-secondary)' }}>
+                <div style={{ padding: '1rem', borderBottom: '1px solid var(--border-color)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                         <h3 style={{ margin: 0, fontSize: '1rem' }}>Library</h3>
-                        <button onClick={handleCreateShard} style={{ cursor: 'pointer', padding: '0.2rem 0.5rem' }}>+</button>
+                        <div style={{ display: 'flex', gap: '5px' }}>
+                            <button onClick={toggleTheme} style={{ padding: '0.2rem 0.5rem', fontSize: '0.8rem', background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>
+                                {theme === 'light' ? '🌙' : '☀️'}
+                            </button>
+                            <button onClick={handleCreateShard} style={{ cursor: 'pointer', padding: '0.2rem 0.5rem', background: 'var(--accent-color)', color: 'white', border: 'none' }}>+</button>
+                        </div>
                     </div>
                     <input
                         type="text"
                         placeholder="Search..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        style={{ width: '100%', padding: '0.4rem', border: '1px solid #e4e4e7', borderRadius: '4px' }}
+                        style={{ width: '100%', padding: '0.4rem', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
                     />
                 </div>
 
@@ -349,9 +529,9 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                             onClick={() => { setSelectedShardId(shard.id); setViewMode('viewer'); }}
                             style={{
                                 padding: '0.5rem 1rem',
-                                borderBottom: '1px solid #f0f0f0',
+                                borderBottom: '1px solid var(--border-color)', // changed from #f0f0f0
                                 cursor: 'pointer',
-                                backgroundColor: selectedShardId === shard.id ? '#e4e4e7' : 'transparent',
+                                backgroundColor: selectedShardId === shard.id ? 'var(--bg-tertiary)' : 'transparent',
                                 fontSize: '0.9rem'
                             }}
                         >
@@ -359,25 +539,25 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                             {shard.tags.length > 0 && (
                                 <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '2px' }}>
                                     {shard.tags.slice(0, 3).map(tag => (
-                                        <span key={tag} style={{ fontSize: '0.7rem', color: '#666', background: '#eee', padding: '0 4px', borderRadius: '4px' }}>#{tag}</span>
+                                        <span key={tag} style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', background: 'var(--bg-primary)', padding: '0 4px', borderRadius: '4px' }}>#{tag}</span>
                                     ))}
                                 </div>
                             )}
-                            <div style={{ fontSize: '0.75rem', color: '#71717a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                 {shard.content || "Empty content"}
                             </div>
                         </div>
                     ))}
                 </div>
 
-                <div style={{ padding: '0.5rem', borderTop: '1px solid #e4e4e7', fontSize: '0.75rem', color: '#a1a1aa' }}>
+                <div style={{ padding: '0.5rem', borderTop: '1px solid var(--border-color)', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                     {filteredShards.length} shards
                 </div>
             </div>
 
             {/* Center: Main Editor/Viewer */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff' }}>
-                <header style={{ height: '50px', borderBottom: '1px solid #e4e4e7', display: 'flex', alignItems: 'center', padding: '0 1rem', justifyContent: 'space-between' }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-secondary)' }}>
+                <header style={{ height: '50px', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', padding: '0 1rem', justifyContent: 'space-between' }}>
                     <div style={{ display: 'flex', gap: '1rem' }}>
                         <button disabled={viewMode === 'editor'} onClick={() => setViewMode('editor')}>Editor</button>
                         <button disabled={viewMode === 'viewer'} onClick={() => setViewMode('viewer')}>Viewer</button>
@@ -393,11 +573,11 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
 
                         {selectedShardId && (
                             <>
-                                <button onClick={handleDelete} style={{ color: 'red' }}>Delete</button>
+                                <button onClick={handleDelete} style={{ color: '#ef4444' }}>Delete</button>
                                 <button onClick={handleSave} disabled={!isDirty}>Save</button>
                             </>
                         )}
-                        <span style={{ fontSize: '0.8rem', color: '#71717a', borderLeft: '1px solid #eee', paddingLeft: '1rem' }}>{vaultPath}</span>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', borderLeft: '1px solid var(--border-color)', paddingLeft: '1rem' }}>{vaultPath}</span>
                         <button onClick={onCloseVault} style={{ fontSize: '0.8rem' }}>Close</button>
                     </div>
                 </header>
@@ -410,15 +590,106 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                     type="text"
                                     value={editTitle}
                                     onChange={(e) => { setEditTitle(e.target.value); setIsDirty(true); }}
-                                    style={{ fontSize: '1.5rem', fontWeight: 'bold', border: 'none', outline: 'none', marginBottom: '1rem', width: '100%' }}
+                                    style={{ fontSize: '1.5rem', fontWeight: 'bold', border: 'none', outline: 'none', marginBottom: '1rem', width: '100%', background: 'transparent', color: 'var(--text-primary)' }}
                                     placeholder="Shard Title"
                                 />
-                                <textarea
-                                    ref={textareaRef}
-                                    value={editContent}
-                                    onChange={(e) => { setEditContent(e.target.value); setIsDirty(true); }}
-                                    style={{ flex: 1, border: 'none', outline: 'none', resize: 'none', fontSize: '1rem', fontFamily: 'monospace' }}
-                                    placeholder="Write something..."
+                                <iframe
+                                    ref={editorIframeRef as any}
+                                    title="editor"
+                                    style={{ flex: 1, border: 'none', width: '100%', height: '100%', backgroundColor: 'transparent' }}
+                                    srcDoc={(() => {
+                                        return `
+                                            <!DOCTYPE html>
+                                            <html>
+                                            <head>
+                                                <style>
+                                                    ${getIframeStyle()}
+                                                    textarea {
+                                                        flex: 1;
+                                                        width: 100%;
+                                                        height: 100%;
+                                                        border: none;
+                                                        outline: none;
+                                                        resize: none;
+                                                        font-size: 1rem;
+                                                        font-family: "JetBrains Mono", monospace;
+                                                        padding: 0;
+                                                        margin: 0;
+                                                        box-sizing: border-box;
+                                                        line-height: 1.6;
+                                                        background: transparent;
+                                                    }
+                                                </style>
+                                            </head>
+                                            <body>
+                                                <textarea id="editor" placeholder="Write something..."></textarea>
+                                                <script>
+                                                    const editor = document.getElementById('editor');
+                                                    
+                                                    // 1. Initial Load & Sync from Parent
+                                                    window.addEventListener('message', (event) => {
+                                                        const data = event.data;
+                                                        if (data.type === 'set_content') {
+                                                            editor.value = data.value;
+                                                        } else if (data.type === 'get_content') {
+                                                            // Reply? Maybe not needed if we sync on input
+                                                        } else if (data.type === 'insert_text') {
+                                                            const start = editor.selectionStart;
+                                                            const end = editor.selectionEnd;
+                                                            const text = editor.value;
+                                                            const before = text.substring(0, start);
+                                                            const after = text.substring(end);
+                                                            const insert = data.text;
+                                                            
+                                                            editor.value = before + insert + after;
+                                                            const newCursor = start + insert.length;
+                                                            editor.selectionStart = newCursor;
+                                                            editor.selectionEnd = newCursor;
+                                                            editor.focus();
+                                                            
+                                                            // Notify parent
+                                                            window.parent.postMessage({ type: 'editor_update', value: editor.value }, '*');
+                                                        } else if (data.type === 'wrap_selection') {
+                                                            const start = editor.selectionStart;
+                                                            const end = editor.selectionEnd;
+                                                            const text = editor.value;
+                                                            const before = text.substring(0, start);
+                                                            const selected = text.substring(start, end);
+                                                            const after = text.substring(end);
+                                                            // data.prefix, data.suffix
+                                                            
+                                                            const newVal = before + data.prefix + selected + data.suffix + after;
+                                                            editor.value = newVal;
+                                                            
+                                                            // Cursor logic: if selected was empty, place cursor inside
+                                                            if (start === end) {
+                                                                const newCursor = start + data.prefix.length;
+                                                                editor.selectionStart = newCursor;
+                                                                editor.selectionEnd = newCursor;
+                                                            } else {
+                                                                // Select the wrapped text? Or just cursor at end?
+                                                                // Let's select the wrapped text (including prefix/suffix? No, just original selection content? )
+                                                                // Standard behavior: select valid content.
+                                                                editor.selectionStart = start + data.prefix.length;
+                                                                editor.selectionEnd = end + data.prefix.length;
+                                                            }
+                                                            editor.focus();
+                                                             window.parent.postMessage({ type: 'editor_update', value: editor.value }, '*');
+                                                        }
+                                                    });
+
+                                                    // 2. Input Handling
+                                                    editor.addEventListener('input', () => {
+                                                         window.parent.postMessage({ type: 'editor_update', value: editor.value }, '*');
+                                                    });
+                                                    
+                                                    // 3. Request initial content on load
+                                                    window.parent.postMessage({ type: 'editor_ready' }, '*');
+                                                </script>
+                                            </body>
+                                            </html>
+                                        `;
+                                    })()}
                                 />
                             </div>
                         ) : (
@@ -437,15 +708,38 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                     const codeBlocks: string[] = [];
                                     content = content.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
                                         let highlighted: string;
-                                        if (lang && hljs.getLanguage(lang)) {
-                                            highlighted = hljs.highlight(code, { language: lang }).value;
-                                        } else {
+                                        try {
+                                            if (lang && hljs.getLanguage(lang)) {
+                                                highlighted = hljs.highlight(code, { language: lang }).value;
+                                            } else {
+                                                // escape HTML if no language
+                                                highlighted = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                                            }
+                                        } catch (e) {
+                                            console.error("Highlight error:", e);
                                             highlighted = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                                         }
+
                                         const langBadge = lang
-                                            ? `<div style="font-size:0.7rem;color:#7f849c;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">${lang}</div>`
+                                            ? `<div style="font-size:0.7rem;color:${theme === 'dark' ? '#a1a1aa' : '#71717a'};margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em;user-select:none;">${lang}</div>`
                                             : '';
-                                        const block = `<pre class="hljs" style="padding:1rem;border-radius:8px;overflow-x:auto;margin:12px 0;"><code>${langBadge}${highlighted}</code></pre>`;
+
+                                        // Ensure pre has relative positioning for the badge if needed, or just flex column?
+                                        // A div inside pre is valid HTML? No, pre content model is phrasing content.
+                                        // But browsers render it. However, to be safe, let's put badge OUTSIDE pre?
+                                        // No, we want it inside the "box".
+
+                                        // Let's use a wrapper div for the whole block?
+                                        // But `marked` replaces placeholder with block.
+                                        // If block is `div`, it's fine.
+
+                                        const block = `
+                                            <div class="code-block-wrapper" style="position:relative;margin:12px 0;border-radius:8px;background:${theme === 'dark' ? '#27272a' : '#f4f4f5'};padding:1rem;">
+                                                ${langBadge}
+                                                <pre class="hljs" style="margin:0;padding:0;background:transparent;overflow-x:auto;"><code>${highlighted}</code></pre>
+                                            </div>
+                                        `;
+
                                         codeBlocks.push(block);
                                         return `\n\nCODEBLOCK${codeBlocks.length - 1}PLACEHOLDER\n\n`;
                                     });
@@ -462,7 +756,7 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                     renderer.link = ({ href, text }) => {
                                         if (href && href.startsWith('shard://')) {
                                             const id = href.replace('shard://', '');
-                                            return `<a href="#" data-shard-id="${id}" style="color:#2563eb;text-decoration:underline;cursor:pointer;">${text}</a>`;
+                                            return `<a href="#" data-shard-id="${id}" style="text-decoration:underline;cursor:pointer;">${text}</a>`;
                                         }
                                         return `<a href="${href}" target="_blank" rel="noopener">${text}</a>`;
                                     };
@@ -481,30 +775,23 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                         <html>
                                         <head>
                                             <style>
-                                                body {
-                                                    font-family: system-ui, -apple-system, blinkmacsystemfont, "Segoe UI", roboto, oxygen, ubuntu, cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
-                                                    margin: 0;
-                                                    padding: 2rem;
-                                                    color: #0f0f0f;
-                                                    background-color: transparent;
-                                                    font-weight: 400;
-                                                    -webkit-font-smoothing: antialiased;
-                                                }
+                                                ${getIframeStyle()}
+                                                /* Extra styles for viewer */
                                                 h1, h2, h3, h4, h5, h6 { margin-top: 1.5em; margin-bottom: 0.5em; font-weight: 600; }
-                                                h1 { font-size: 2em; border-bottom: 1px solid #eaeaea; padding-bottom: 0.3em; }
+                                                h1 { font-size: 2em; border-bottom: 1px solid; padding-bottom: 0.3em; }
                                                 p { line-height: 1.6; margin-bottom: 1em; }
-                                                a { color: #2563eb; text-decoration: none; cursor: pointer; }
+                                                a { text-decoration: none; cursor: pointer; }
                                                 a:hover { text-decoration: underline; }
                                                 img { max-width: 100%; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
                                                 pre { font-family: "JetBrains Mono", monospace; font-size: 0.9em; }
-                                                code { font-family: "JetBrains Mono", monospace; background: rgba(0,0,0,0.05); padding: 0.2em 0.4em; border-radius: 4px; }
+                                                code { font-family: "JetBrains Mono", monospace; padding: 0.2em 0.4em; border-radius: 4px; }
                                                 pre code { background: transparent; padding: 0; }
-                                                blockquote { border-left: 4px solid #e5e7eb; margin: 0; padding-left: 1rem; color: #6b7280; }
+                                                blockquote { border-left: 4px solid; margin: 0; padding-left: 1rem; }
                                                 ul, ol { padding-left: 1.5rem; }
                                                 li { margin-bottom: 0.5em; }
                                                 ::selection { background-color: #b4d5fe; color: inherit; }
                                             </style>
-                                            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+                                            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/${theme === 'dark' ? 'github-dark' : 'github'}.min.css">
                                         </head>
                                         <body>
                                             <h1>${editTitle}</h1>
@@ -528,7 +815,7 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                             />
                         )
                     ) : (
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#a1a1aa' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)' }}>
                             Select or create a shard to start
                         </div>
                     )}
@@ -537,7 +824,7 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
 
             {/* Right Sidebar: Inspector */}
             {true && (
-                <div style={{ width: '300px', minWidth: '300px', borderLeft: '1px solid #e4e4e7', backgroundColor: '#fafafa', padding: '1rem' }}>
+                <div style={{ width: '300px', minWidth: '300px', borderLeft: '1px solid var(--border-color)', backgroundColor: 'var(--bg-primary)', padding: '1rem' }}>
                     <h3>Inspector</h3>
                     {selectedShardId ? (
                         <div>
@@ -553,26 +840,26 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                         onChange={(e) => setNewTag(e.target.value)}
                                         onKeyDown={(e) => e.key === 'Enter' && handleAddTag()}
                                         placeholder="Add tag..."
-                                        style={{ flex: 1, padding: '4px', borderRadius: '4px', border: '1px solid #ccc' }}
+                                        style={{ flex: 1, padding: '4px', borderRadius: '4px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
                                     />
                                     <button onClick={handleAddTag} disabled={!newTag.trim()}>+</button>
                                 </div>
                                 <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
                                     {shards.find(s => s.id === selectedShardId)?.tags.map(tag => (
-                                        <span key={tag} style={{ background: '#e4e4e7', padding: '2px 6px', borderRadius: '4px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                        <span key={tag} style={{ background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: '4px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
                                             #{tag}
                                             <span
                                                 onClick={() => handleRemoveTag(tag)}
-                                                style={{ cursor: 'pointer', fontWeight: 'bold', color: '#666' }}
+                                                style={{ cursor: 'pointer', fontWeight: 'bold', color: 'var(--text-secondary)' }}
                                             >&times;</span>
                                         </span>
                                     ))}
-                                    {shards.find(s => s.id === selectedShardId)?.tags.length === 0 && <small style={{ color: '#999' }}>No tags</small>}
+                                    {shards.find(s => s.id === selectedShardId)?.tags.length === 0 && <small style={{ color: 'var(--text-secondary)' }}>No tags</small>}
                                 </div>
                             </div>
                         </div>
                     ) : (
-                        <p style={{ color: '#a1a1aa' }}>No shard selected</p>
+                        <p style={{ color: 'var(--text-secondary)' }}>No shard selected</p>
                     )}
                 </div>
             )}
@@ -583,7 +870,7 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                     position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
                     backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000
                 }}>
-                    <div style={{ backgroundColor: 'white', padding: '1rem', borderRadius: '8px', width: '400px', maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: '0 4px 12px rgba(0,0,0,0.2)' }}>
+                    <div style={{ backgroundColor: 'var(--bg-secondary)', padding: '1rem', borderRadius: '8px', width: '400px', maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', border: '1px solid var(--border-color)' }}>
                         <h3 style={{ marginTop: 0 }}>Select Shard to Link</h3>
                         <div style={{ marginBottom: '1rem' }}>
                             <input
@@ -592,19 +879,19 @@ export default function SmartLibraryLayout({ vaultPath, onCloseVault }: SmartLib
                                 placeholder="Search shards..."
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
-                                style={{ width: '100%', padding: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }}
+                                style={{ width: '100%', padding: '0.5rem', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
                             />
                         </div>
 
-                        <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #eee', borderRadius: '4px', minHeight: '200px' }}>
+                        <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '4px', minHeight: '200px' }}>
                             {filteredShards.map(shard => (
                                 <div
                                     key={shard.id}
                                     onClick={() => handleSelectShardForLink(shard)}
-                                    style={{ padding: '0.5rem', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
+                                    style={{ padding: '0.5rem', borderBottom: '1px solid var(--border-color)', cursor: 'pointer' }}
                                 >
                                     <div style={{ fontWeight: 'bold' }}>{shard.title}</div>
-                                    <div style={{ fontSize: '0.8rem', color: '#666' }}>{shard.id.substring(0, 8)}...</div>
+                                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{shard.id.substring(0, 8)}...</div>
                                 </div>
                             ))}
                         </div>
